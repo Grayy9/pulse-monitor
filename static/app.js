@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 let monitors = [];
 let selectedId = null;
+let editingId = null;
 let toastTimer;
 
 function notice(message) {
@@ -23,7 +24,7 @@ function formatTime(value) {
 }
 
 function statusFor(monitor) {
-  return monitor.up === null ? ['pending', '等待检查'] : monitor.up ? ['up', '运行正常'] : ['down', '服务异常'];
+  return monitor.paused ? ['paused', '已暂停'] : monitor.up === null ? ['pending', '等待检查'] : monitor.up ? ['up', '运行正常'] : ['down', '服务异常'];
 }
 
 function element(tag, className, value) {
@@ -64,9 +65,9 @@ function renderRow(monitor) {
 
 function render() {
   $('count-total').textContent = monitors.length;
-  $('count-up').textContent = monitors.filter(m => m.up === true).length;
-  $('count-down').textContent = monitors.filter(m => m.up === false).length;
-  $('count-pending').textContent = monitors.filter(m => m.up === null).length;
+  $('count-up').textContent = monitors.filter(m => !m.paused && m.up === true).length;
+  $('count-down').textContent = monitors.filter(m => !m.paused && m.up === false).length;
+  $('count-pending').textContent = monitors.filter(m => m.paused || m.up === null).length;
   $('monitor-count').textContent = `${monitors.length} 项`;
   const list = $('monitor-list');
   list.replaceChildren();
@@ -105,14 +106,21 @@ async function showDetail(id, scroll = true) {
   const monitor = monitors.find(item => item.id === id);
   if (!monitor) { selectedId = null; $('detail').classList.add('hidden'); return; }
   selectedId = id;
-  const data = await api(`/api/monitors/${id}/history`);
+  const [data, stats] = await Promise.all([
+    api(`/api/monitors/${id}/history`),
+    api(`/api/monitors/${id}/statistics`),
+  ]);
   $('detail-title').textContent = `${monitor.name} · 检查记录`;
   const body = $('detail-body');
   body.replaceChildren();
   const inner = element('div', 'detail-inner');
   const meta = element('div', 'detail-meta');
   meta.append(element('span', '', monitor.url), element('span', '', `检查间隔 ${monitor.interval} 秒`), element('span', '', `上次检查 ${formatTime(monitor.last_checked)}`));
-  inner.append(meta, element('p', 'history-title', '最近检查状态'));
+  if (monitor.paused) meta.append(element('span', 'paused-note', '自动检查已暂停'));
+  inner.append(meta);
+  const metrics = element('div', 'detail-metrics');
+  metrics.append(element('div', '', `近 24 小时检查可用率：${stats.availability_24h === null ? '暂无数据' : `${stats.availability_24h}%`}`), element('div', '', `检查次数：${stats.checks_24h}`));
+  inner.append(metrics, element('p', 'metric-note', '按检查次数计算；不代表持续在线时长。'), element('p', 'history-title', '最近检查状态'));
   const bars = element('div', 'history-bars');
   bars.setAttribute('aria-label', '最近检查状态图');
   data.history.slice(0, 40).reverse().forEach(item => {
@@ -129,9 +137,13 @@ async function showDetail(id, scroll = true) {
     history.append(line);
   });
   if (!data.history.length) history.append(element('p', '', '尚无检查记录'));
-  inner.append(history);
+  inner.append(history, element('p', 'history-title incident-title', '近 24 小时异常时段'));
+  const incidents = element('div', 'incident-list');
+  stats.incidents.forEach(item => incidents.append(element('div', 'incident-item', `${formatTime(item.start)} — ${item.end ? formatTime(item.end) : '仍在异常中'}`)));
+  if (!stats.incidents.length) incidents.append(element('p', 'metric-note', '近 24 小时没有异常记录'));
+  inner.append(incidents);
   const actions = element('div', 'history-actions');
-  actions.append(button('立即检查', () => runCheck(id)), button('删除监控', () => deleteMonitor(id), 'danger'));
+  actions.append(button('立即检查', () => runCheck(id)), button('编辑', () => openEdit(id)), button(monitor.paused ? '恢复自动检查' : '暂停自动检查', () => togglePaused(id, !monitor.paused)), button('删除监控', () => deleteMonitor(id), 'danger'));
   inner.append(actions);
   body.append(inner);
   $('detail').classList.remove('hidden');
@@ -150,8 +162,42 @@ async function deleteMonitor(id) {
   } catch (error) { notice(error.message); }
 }
 
+async function togglePaused(id, paused) {
+  try {
+    await api(`/api/monitors/${id}`, { method: 'PATCH', body: JSON.stringify({ paused }) });
+    await refresh();
+    notice(paused ? '已暂停自动检查；仍可手动检查' : '已恢复自动检查');
+  } catch (error) { notice(error.message); }
+}
+
+function openEdit(id) {
+  const monitor = monitors.find(item => item.id === id);
+  if (!monitor) return;
+  editingId = id;
+  $('modal-eyebrow').textContent = 'EDIT MONITOR';
+  $('modal-title').textContent = '编辑监控';
+  $('submit-monitor').textContent = '保存修改';
+  $('form-hint').textContent = '修改地址会清除当前状态并重新检查，历史记录会保留。';
+  $('name').value = monitor.name;
+  $('url').value = monitor.url;
+  $('interval').value = monitor.interval;
+  $('modal').classList.remove('hidden');
+  $('name').focus();
+}
+
+function openAdd() {
+  editingId = null;
+  $('add-form').reset();
+  $('modal-eyebrow').textContent = 'NEW MONITOR';
+  $('modal-title').textContent = '添加监控';
+  $('submit-monitor').textContent = '创建监控';
+  $('form-hint').textContent = '支持 HTTP 和 HTTPS。添加后会自动开始第一次检查。';
+  $('modal').classList.remove('hidden');
+  $('name').focus();
+}
+
 function closeModal() { $('modal').classList.add('hidden'); $('form-error').textContent = ''; }
-$('open-add').addEventListener('click', () => { $('modal').classList.remove('hidden'); $('name').focus(); });
+$('open-add').addEventListener('click', openAdd);
 $('close-add').addEventListener('click', closeModal);
 $('cancel-add').addEventListener('click', closeModal);
 $('close-detail').addEventListener('click', () => { selectedId = null; $('detail').classList.add('hidden'); });
@@ -164,11 +210,12 @@ $('add-form').addEventListener('submit', async event => {
   data.interval = Number(data.interval);
   $('form-error').textContent = '';
   try {
-    await api('/api/monitors', { method: 'POST', body: JSON.stringify(data) });
+    const wasEditing = editingId !== null;
+    await api(wasEditing ? `/api/monitors/${editingId}` : '/api/monitors', { method: wasEditing ? 'PATCH' : 'POST', body: JSON.stringify(data) });
     form.reset();
     closeModal();
     await refresh();
-    notice('监控已创建，首次检查即将开始');
+    notice(wasEditing ? '监控已更新' : '监控已创建，首次检查即将开始');
   } catch (error) { $('form-error').textContent = error.message; }
 });
 refresh();
