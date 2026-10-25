@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>Pulse Monitor · 服务监控</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Pulse Monitor 首页"><span class="brand-mark"><span></span></span><span>pulse<span class="brand-light">monitor</span></span></a>
+      <div class="workspace-label">工作台</div>
+      <nav aria-label="主导航"><a class="nav-item active" href="/"><span class="nav-icon">◉</span> 监控概览</a></nav>
+      <div class="sidebar-bottom"><span class="online-dot"></span> 本地服务运行中</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div class="crumb">工作台 <span>/</span> 监控概览</div><div class="topbar-right"><span id="updated">正在连接…</span><span class="avatar">PM</span></div></header>
+      <div class="content">
+        <div class="page-head"><div><p class="eyebrow">OVERVIEW</p><h1>监控概览</h1><p class="intro">实时了解你的服务状态，及时发现异常。</p></div><button id="open-add" class="button primary"><span class="plus">＋</span> 添加监控</button></div>
+
+        <section class="summary" aria-label="状态统计">
+          <article class="stat"><div class="stat-top"><span>监控总数</span><span class="stat-icon neutral">▤</span></div><strong id="count-total">—</strong><small>正在监控的服务</small></article>
+          <article class="stat"><div class="stat-top"><span>运行正常</span><span class="stat-icon good">✓</span></div><strong id="count-up">—</strong><small><span class="mini-dot good"></span> 服务在线</small></article>
+          <article class="stat"><div class="stat-top"><span>服务异常</span><span class="stat-icon bad">!</span></div><strong id="count-down">—</strong><small><span class="mini-dot bad"></span> 需要关注</small></article>
+          <article class="stat"><div class="stat-top"><span>等待检查</span><span class="stat-icon pending">◷</span></div><strong id="count-pending">—</strong><small>即将开始检查</small></article>
+        </section>
+
+        <section class="panel monitors-panel" aria-labelledby="monitor-title"><div class="panel-head"><div><h2 id="monitor-title">所有监控</h2><p>每隔设定时间自动检查一次</p></div><span id="monitor-count" class="count-pill">0 项</span></div><div id="monitor-list" class="monitor-list"></div></section>
+        <section id="detail" class="panel detail-panel hidden" aria-labelledby="detail-title"><div class="panel-head"><div><p class="eyebrow">CHECK HISTORY</p><h2 id="detail-title">检查记录</h2></div><button id="close-detail" class="icon-button" aria-label="关闭详情">×</button></div><div id="detail-body"></div></section>
+        <footer>Pulse Monitor · 每 10 秒刷新页面数据</footer>
+      </div>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><div><p class="eyebrow">NEW MONITOR</p><h2 id="modal-title">添加监控</h2></div><button id="close-add" class="icon-button" aria-label="关闭">×</button></div><form id="add-form"><label for="name">服务名称</label><input id="name" name="name" maxlength="80" placeholder="例如：官方网站" required><label for="url">网站地址</label><input id="url" name="url" type="url" placeholder="https://example.com" required><label for="interval">检查间隔</label><select id="interval" name="interval"><option value="30">30 秒</option><option value="60" selected>1 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select><p class="form-hint">支持 HTTP 和 HTTPS。添加后会自动开始第一次检查。</p><p id="form-error" class="form-error" role="alert"></p><div class="modal-actions"><button type="button" id="cancel-add" class="button secondary">取消</button><button class="button primary" type="submit">创建监控</button></div></form></div></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
