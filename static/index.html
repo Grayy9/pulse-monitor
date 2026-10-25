@@ -25,7 +25,7 @@
           <article class="stat"><div class="stat-top"><span>监控总数</span><span class="stat-icon neutral">▤</span></div><strong id="count-total">—</strong><small>正在监控的服务</small></article>
           <article class="stat"><div class="stat-top"><span>运行正常</span><span class="stat-icon good">✓</span></div><strong id="count-up">—</strong><small><span class="mini-dot good"></span> 服务在线</small></article>
           <article class="stat"><div class="stat-top"><span>服务异常</span><span class="stat-icon bad">!</span></div><strong id="count-down">—</strong><small><span class="mini-dot bad"></span> 需要关注</small></article>
-          <article class="stat"><div class="stat-top"><span>等待检查</span><span class="stat-icon pending">◷</span></div><strong id="count-pending">—</strong><small>即将开始检查</small></article>
+          <article class="stat"><div class="stat-top"><span>等待检查 / 已暂停</span><span class="stat-icon pending">◷</span></div><strong id="count-pending">—</strong><small>尚无结果或已暂停</small></article>
         </section>
 
         <section class="panel monitors-panel" aria-labelledby="monitor-title"><div class="panel-head"><div><h2 id="monitor-title">所有监控</h2><p>每隔设定时间自动检查一次</p></div><span id="monitor-count" class="count-pill">0 项</span></div><div id="monitor-list" class="monitor-list"></div></section>
@@ -35,7 +35,7 @@
     </main>
   </div>
 
-  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><div><p class="eyebrow">NEW MONITOR</p><h2 id="modal-title">添加监控</h2></div><button id="close-add" class="icon-button" aria-label="关闭">×</button></div><form id="add-form"><label for="name">服务名称</label><input id="name" name="name" maxlength="80" placeholder="例如：官方网站" required><label for="url">网站地址</label><input id="url" name="url" type="url" placeholder="https://example.com" required><label for="interval">检查间隔</label><select id="interval" name="interval"><option value="30">30 秒</option><option value="60" selected>1 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select><p class="form-hint">支持 HTTP 和 HTTPS。添加后会自动开始第一次检查。</p><p id="form-error" class="form-error" role="alert"></p><div class="modal-actions"><button type="button" id="cancel-add" class="button secondary">取消</button><button class="button primary" type="submit">创建监控</button></div></form></div></div>
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-card"><div class="modal-head"><div><p class="eyebrow" id="modal-eyebrow">NEW MONITOR</p><h2 id="modal-title">添加监控</h2></div><button id="close-add" class="icon-button" aria-label="关闭">×</button></div><form id="add-form"><label for="name">服务名称</label><input id="name" name="name" maxlength="80" placeholder="例如：官方网站" required><label for="url">网站地址</label><input id="url" name="url" type="url" placeholder="https://example.com" required><label for="interval">检查间隔（秒，30–3600）</label><input id="interval" name="interval" type="number" min="30" max="3600" value="60" required><p class="form-hint" id="form-hint">支持 HTTP 和 HTTPS。添加后会自动开始第一次检查。</p><p id="form-error" class="form-error" role="alert"></p><div class="modal-actions"><button type="button" id="cancel-add" class="button secondary">取消</button><button class="button primary" id="submit-monitor" type="submit">创建监控</button></div></form></div></div>
   <div id="toast" class="toast hidden" role="status"></div>
   <script src="/app.js" defer></script>
 </body>
