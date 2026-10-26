@@ -1,6 +1,8 @@
 """Small local HTTP uptime monitor built with Python's standard library."""
 
 import json
+import csv
+import io
 import os
 import sqlite3
 import threading
@@ -11,16 +13,23 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
+REPORT_RANGES = {"24h": (86400, 24), "7d": (604800, 7)}
+MAX_CHECKS_PER_MONITOR = 21000
 
 
 def stamp(value=None):
     return datetime.fromtimestamp(time.time() if value is None else value, timezone.utc).isoformat()
+
+
+def csv_safe(value):
+    text = "" if value is None else str(value)
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
 
 class Store:
@@ -53,6 +62,7 @@ class Store:
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS checks_monitor ON checks(monitor_id, id DESC);
+                CREATE INDEX IF NOT EXISTS checks_monitor_time ON checks(monitor_id, checked_at);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(monitors)")}
             for name, definition in (
@@ -194,8 +204,56 @@ class Store:
                 "UPDATE monitors SET last_checked=?,last_up=?,last_status_code=?,last_response_ms=?,last_error=?,failure_streak=?,alert_state=? WHERE id=?",
                 (now, int(up), status_code, response_ms, error, streak, alert_state, mid),
             )
-            db.execute("DELETE FROM checks WHERE monitor_id=? AND id NOT IN (SELECT id FROM checks WHERE monitor_id=? ORDER BY id DESC LIMIT 4000)", (mid, mid))
+            db.execute("DELETE FROM checks WHERE monitor_id=? AND id NOT IN (SELECT id FROM checks WHERE monitor_id=? ORDER BY id DESC LIMIT ?)", (mid, mid, MAX_CHECKS_PER_MONITOR))
         return notify
+
+    def report_rows(self, mid, range_name, now=None):
+        if range_name not in REPORT_RANGES:
+            raise ValueError("报表范围须为 24h 或 7d")
+        now = time.time() if now is None else now
+        seconds, _count = REPORT_RANGES[range_name]
+        start = now - seconds
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT checked_at,up,status_code,response_ms,error FROM checks WHERE monitor_id=? AND checked_at>=? AND checked_at<? ORDER BY checked_at,id",
+                (mid, stamp(start), stamp(now)),
+            ).fetchall()
+        return start, now, [dict(row) for row in rows]
+
+    def report(self, mid, range_name, now=None):
+        start, end, rows = self.report_rows(mid, range_name, now)
+        seconds, count = REPORT_RANGES[range_name]
+        step = seconds // count
+        buckets = []
+        for index in range(count):
+            bucket_start = start + index * step
+            buckets.append({"start": stamp(bucket_start), "end": stamp(bucket_start + step),
+                            "checks": 0, "successes": 0, "failures": 0,
+                            "availability": None, "average_response_ms": None,
+                            "_response_total": 0})
+        for row in rows:
+            index = int((datetime.fromisoformat(row["checked_at"]).timestamp() - start) // step)
+            bucket = buckets[index]
+            bucket["checks"] += 1
+            if row["up"]:
+                bucket["successes"] += 1
+                bucket["_response_total"] += row["response_ms"]
+            else:
+                bucket["failures"] += 1
+        for bucket in buckets:
+            response_total = bucket.pop("_response_total")
+            if bucket["checks"]:
+                bucket["availability"] = round(100 * bucket["successes"] / bucket["checks"], 1)
+            if bucket["successes"]:
+                bucket["average_response_ms"] = round(response_total / bucket["successes"], 1)
+        successes = sum(bucket["successes"] for bucket in buckets)
+        checks = len(rows)
+        response_total = sum(row["response_ms"] for row in rows if row["up"])
+        return {"range": range_name, "start": stamp(start), "end": stamp(end),
+                "checks": checks, "successes": successes, "failures": checks - successes,
+                "availability": round(100 * successes / checks, 1) if checks else None,
+                "average_response_ms": round(response_total / successes, 1) if successes else None,
+                "buckets": buckets}
 
     def statistics(self, mid, now=None):
         now = time.time() if now is None else now
@@ -317,6 +375,22 @@ def make_server(store, host="127.0.0.1", port=3001, webhook_url=None, runner=Non
             self.end_headers()
             self.wfile.write(body)
 
+        def send_csv(self, mid, range_name):
+            _start, _end, rows = store.report_rows(mid, range_name)
+            output = io.StringIO(newline="")
+            writer = csv.writer(output, lineterminator="\r\n")
+            writer.writerow(("checked_at_utc", "up", "status_code", "response_ms", "error"))
+            for row in rows:
+                writer.writerow((row["checked_at"], row["up"], row["status_code"],
+                                 row["response_ms"], csv_safe(row["error"])))
+            body = ("\ufeff" + output.getvalue()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="pulse-monitor-{mid}-{range_name}.csv"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def path_parts(self):
             return self.path.split("?", 1)[0].strip("/").split("/")
 
@@ -336,6 +410,19 @@ def make_server(store, host="127.0.0.1", port=3001, webhook_url=None, runner=Non
                     self.send_json(200, store.statistics(mid))
                 else:
                     self.send_json(404, {"error": "监控项不存在"})
+            elif len(parts) == 4 and parts[:2] == ["api", "monitors"] and parts[2].isdigit() and parts[3] in ("report", "report.csv"):
+                mid = int(parts[2])
+                if not store.get_monitor(mid):
+                    self.send_json(404, {"error": "监控项不存在"})
+                    return
+                range_name = parse_qs(urlsplit(self.path).query).get("range", ["24h"])[0]
+                try:
+                    if parts[3] == "report.csv":
+                        self.send_csv(mid, range_name)
+                    else:
+                        self.send_json(200, store.report(mid, range_name))
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
             elif self.path.split("?", 1)[0] in ("/", "/style.css", "/app.js"):
                 name = "index.html" if self.path == "/" else self.path.lstrip("/")
                 content = (STATIC / name).read_bytes()
