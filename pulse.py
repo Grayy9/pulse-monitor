@@ -145,8 +145,9 @@ class Store:
                    failure_streak=CASE WHEN ? THEN 0 ELSE failure_streak END,
                    alert_state=CASE WHEN ? THEN NULL ELSE alert_state END WHERE id=?""",
                 (name, url, interval, int(paused), int(url_changed or resumed),
-                 int(url_changed), int(url_changed), int(url_changed), int(url_changed),
-                 int(url_changed), int(url_changed), mid),
+                 int(url_changed or resumed), int(url_changed or resumed),
+                 int(url_changed or resumed), int(url_changed or resumed),
+                 int(url_changed or resumed), int(url_changed), mid),
             )
         return self.get_monitor(mid)
 
