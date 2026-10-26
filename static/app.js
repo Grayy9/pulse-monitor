@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 let monitors = [];
 let selectedId = null;
 let editingId = null;
+let reportRange = '24h';
+let detailVersion = 0;
 let toastTimer;
 
 function notice(message) {
@@ -22,6 +24,14 @@ function formatTime(value) {
   if (!value) return '尚未检查';
   return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
+
+function formatBucket(bucket, range) {
+  if (range === '24h') return new Date(bucket.start).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const options = { month: '2-digit', day: '2-digit' };
+  return `${new Date(bucket.start).toLocaleString('zh-CN', options)}–${new Date(bucket.end).toLocaleString('zh-CN', options)}`;
+}
+
+function metric(value, suffix = '') { return value === null ? '暂无数据' : `${value}${suffix}`; }
 
 function statusFor(monitor) {
   return monitor.paused ? ['paused', '已暂停'] : monitor.up === null ? ['pending', '等待检查'] : monitor.up ? ['up', '运行正常'] : ['down', '服务异常'];
@@ -105,11 +115,15 @@ async function runCheck(id) {
 async function showDetail(id, scroll = true) {
   const monitor = monitors.find(item => item.id === id);
   if (!monitor) { selectedId = null; $('detail').classList.add('hidden'); return; }
+  if (selectedId !== id) reportRange = '24h';
   selectedId = id;
-  const [data, stats] = await Promise.all([
+  const version = ++detailVersion;
+  const [data, stats, report] = await Promise.all([
     api(`/api/monitors/${id}/history`),
     api(`/api/monitors/${id}/statistics`),
+    api(`/api/monitors/${id}/report?range=${reportRange}`),
   ]);
+  if (version !== detailVersion || selectedId !== id) return;
   $('detail-title').textContent = `${monitor.name} · 检查记录`;
   const body = $('detail-body');
   body.replaceChildren();
@@ -117,10 +131,7 @@ async function showDetail(id, scroll = true) {
   const meta = element('div', 'detail-meta');
   meta.append(element('span', '', monitor.url), element('span', '', `检查间隔 ${monitor.interval} 秒`), element('span', '', `上次检查 ${formatTime(monitor.last_checked)}`));
   if (monitor.paused) meta.append(element('span', 'paused-note', '自动检查已暂停'));
-  inner.append(meta);
-  const metrics = element('div', 'detail-metrics');
-  metrics.append(element('div', '', `近 24 小时检查可用率：${stats.availability_24h === null ? '暂无数据' : `${stats.availability_24h}%`}`), element('div', '', `检查次数：${stats.checks_24h}`));
-  inner.append(metrics, element('p', 'metric-note', '按检查次数计算；不代表持续在线时长。'), element('p', 'history-title', '最近检查状态'));
+  inner.append(meta, renderReport(id, report), element('p', 'history-title', '最近检查状态'));
   const bars = element('div', 'history-bars');
   bars.setAttribute('aria-label', '最近检查状态图');
   data.history.slice(0, 40).reverse().forEach(item => {
@@ -148,6 +159,80 @@ async function showDetail(id, scroll = true) {
   body.append(inner);
   $('detail').classList.remove('hidden');
   if (scroll) $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderReport(id, report) {
+  const section = element('section', 'report-section');
+  section.setAttribute('aria-label', '监控报表');
+  const head = element('div', 'report-head');
+  head.append(element('h3', '', '运行报表'));
+  const controls = element('div', 'report-controls');
+  for (const [range, label] of [['24h', '近 24 小时'], ['7d', '近 7 天']]) {
+    const control = button(label, () => { reportRange = range; showDetail(id, false).catch(error => notice(error.message)); });
+    control.setAttribute('aria-pressed', String(report.range === range));
+    controls.append(control);
+  }
+  const exportLink = element('a', 'small-button export-link', '导出 CSV');
+  exportLink.href = `/api/monitors/${id}/report.csv?range=${report.range}`;
+  exportLink.setAttribute('download', `pulse-monitor-${id}-${report.range}.csv`);
+  controls.append(exportLink);
+  head.append(controls);
+  section.append(head);
+  const summary = element('div', 'report-summary');
+  for (const [label, value] of [
+    ['检查可用率', metric(report.availability, '%')],
+    ['成功 / 总检查', `${report.successes} / ${report.checks}`],
+    ['失败检查', String(report.failures)],
+    ['成功检查平均响应', metric(report.average_response_ms, ' ms')],
+  ]) {
+    const card = element('div', 'report-metric');
+    card.append(element('span', '', label), element('strong', '', value));
+    summary.append(card);
+  }
+  section.append(summary, element('p', 'metric-note', '可用率按检查次数计算；空白时段没有检查记录。时间标签按本地时间显示。'));
+  section.append(reportChart(report, 'availability', '检查可用率', '%'));
+  section.append(reportChart(report, 'average_response_ms', '平均响应时间（成功检查）', ' ms'));
+  const details = element('details', 'report-table-wrap');
+  details.append(element('summary', '', '查看各时段数据'));
+  const table = element('table', 'report-table');
+  const header = element('tr');
+  for (const name of ['时段开始', '检查', '成功', '失败', '可用率', '平均响应']) header.append(element('th', '', name));
+  table.append(header);
+  for (const bucket of report.buckets) {
+    const row = element('tr');
+    for (const value of [formatTime(bucket.start), bucket.checks, bucket.successes, bucket.failures,
+      metric(bucket.availability, '%'), metric(bucket.average_response_ms, ' ms')]) row.append(element('td', '', String(value)));
+    table.append(row);
+  }
+  const scroll = element('div', 'report-table-scroll');
+  scroll.append(table);
+  details.append(scroll);
+  section.append(details);
+  return section;
+}
+
+function reportChart(report, key, title, unit) {
+  const wrapper = element('div', 'report-chart');
+  wrapper.append(element('h4', '', title));
+  const plot = element('div', 'report-plot');
+  plot.classList.add(report.range === '24h' ? 'hourly' : 'daily');
+  const values = report.buckets.map(bucket => bucket[key]).filter(value => value !== null);
+  const max = key === 'availability' ? 100 : Math.max(1, ...values);
+  report.buckets.forEach((bucket, index) => {
+    const column = element('div', 'report-column');
+    const value = bucket[key];
+    const bar = element('div', `report-bar ${value === null ? 'missing' : key === 'availability' ? 'availability' : 'latency'}`);
+    bar.style.height = value === null ? '3px' : `${Math.max(3, 100 * value / max)}%`;
+    const description = `${formatTime(bucket.start)} 至 ${formatTime(bucket.end)}：${metric(value, unit)}，${bucket.checks} 次检查`;
+    bar.title = description;
+    bar.setAttribute('aria-label', description);
+    bar.tabIndex = 0;
+    const label = report.range === '24h' && index % 3 !== 0 && index !== report.buckets.length - 1 ? '' : formatBucket(bucket, report.range);
+    column.append(bar, element('span', 'report-xlabel', label));
+    plot.append(column);
+  });
+  wrapper.append(plot);
+  return wrapper;
 }
 
 async function deleteMonitor(id) {
