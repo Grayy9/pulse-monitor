@@ -1,4 +1,6 @@
 import json
+import csv
+import io
 import sqlite3
 import tempfile
 import threading
@@ -127,6 +129,55 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(len(stats["incidents"]), 1)
         self.assertEqual(stats["incidents"][0]["start"], datetime.fromtimestamp(now - 7200, timezone.utc).isoformat())
         self.assertEqual(stats["incidents"][0]["end"], datetime.fromtimestamp(now - 1800, timezone.utc).isoformat())
+
+    def test_report_buckets_and_empty_values(self):
+        monitor = self.store.add_monitor("Report", self.url, 60)
+        mid = monitor["id"]
+        now = 1_800_000_000.0
+        self.store.save_check(mid, True, 200, 80, None, checked_at=now - 86400)
+        self.store.save_check(mid, False, 503, 900, "HTTP 503", checked_at=now - 3600)
+        self.store.save_check(mid, True, 200, 120, None, checked_at=now - 100)
+        self.store.save_check(mid, True, 200, 500, None, checked_at=now)
+        report = self.store.report(mid, "24h", now=now)
+        self.assertEqual((report["checks"], report["successes"], report["failures"]), (3, 2, 1))
+        self.assertEqual((report["availability"], report["average_response_ms"]), (66.7, 100.0))
+        self.assertEqual(len(report["buckets"]), 24)
+        self.assertEqual(report["buckets"][0]["checks"], 1)
+        self.assertEqual(report["buckets"][-2]["checks"], 0)
+        self.assertIsNone(report["buckets"][-2]["availability"])
+        self.assertIsNone(report["buckets"][-2]["average_response_ms"])
+        self.assertEqual(report["buckets"][-1]["checks"], 2)
+        self.assertEqual(report["buckets"][-1]["average_response_ms"], 120.0)
+        weekly = self.store.report(mid, "7d", now=now)
+        self.assertEqual(len(weekly["buckets"]), 7)
+        self.assertEqual(weekly["checks"], 3)
+        empty = self.store.report(mid, "24h", now=now - 900000)
+        self.assertEqual(empty["checks"], 0)
+        self.assertIsNone(empty["availability"])
+        self.assertIsNone(empty["average_response_ms"])
+
+    def test_report_api_csv_and_invalid_range(self):
+        monitor = self.store.add_monitor("Export", self.url, 60)
+        self.store.save_check(monitor["id"], False, 503, 21, "=bad()")
+        server = make_server(self.store, "127.0.0.1", 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}/api/monitors/{monitor['id']}"
+        try:
+            with urlopen(base + "/report?range=24h") as response:
+                self.assertEqual(json.load(response)["checks"], 1)
+            with urlopen(base + "/report.csv?range=24h") as response:
+                self.assertIn("text/csv", response.headers["Content-Type"])
+                rows = list(csv.DictReader(io.StringIO(response.read().decode("utf-8-sig"))))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["error"], "'=bad()")
+            for url, status in ((base + "/report?range=30d", 400), (base + "9/report?range=24h", 404)):
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(url)
+                self.assertEqual(caught.exception.code, status)
+                caught.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_checks_record_success_and_failure(self):
         monitor = self.store.add_monitor("Example", self.url, 60)
