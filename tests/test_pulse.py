@@ -106,6 +106,8 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(self.store.due_monitors(time.time() + 400), [])
         resumed = self.store.update_monitor(monitor["id"], paused=False)
         self.assertFalse(resumed["paused"])
+        self.assertIsNone(resumed["up"])
+        self.assertIsNone(resumed["last_response_ms"])
         self.assertIn(monitor["id"], self.store.due_monitors())
         changed_url = self.store.update_monitor(monitor["id"], url=self.url + "next")
         self.assertIsNone(changed_url["up"])
